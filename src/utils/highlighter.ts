@@ -15,6 +15,7 @@ import {
 import { detectBrowser, addBrowserClassToHtml } from './browser-detection';
 import { generalSettings, loadSettings, DEFAULT_HIGHLIGHT_COLOR } from './storage-utils';
 import { normalizeHighlightCreatedAt, resolveHighlightCreatedAt } from './highlight-timestamp-utils';
+import { shouldAutoMergeHighlights } from './highlight-merge-policy';
 
 /**
  * Helper function to create SVG elements
@@ -64,6 +65,12 @@ function createSVG(config: {
 	}
 	
 	return svg;
+}
+
+function sendRuntimeMessageSafely(message: unknown): void {
+	browser.runtime.sendMessage(message).catch(() => {
+		// Background/service worker may not be reachable during reloads/navigation.
+	});
 }
 
 export type AnyHighlightData = TextHighlightData | ElementHighlightData | ComplexHighlightData;
@@ -228,7 +235,7 @@ export function toggleHighlighterMenu(isActive: boolean) {
 		disableLinkClicks();
 		createHighlighterMenu();
 		addBrowserClassToHtml();
-		browser.runtime.sendMessage({ action: "highlighterModeChanged", isActive: true });
+		sendRuntimeMessageSafely({ action: "highlighterModeChanged", isActive: true });
 		applyHighlights();
 	} else {
 		document.removeEventListener('mouseup', handleMouseUp);
@@ -240,7 +247,7 @@ export function toggleHighlighterMenu(isActive: boolean) {
 		removeHoverOverlay();
 		enableLinkClicks();
 		removeHighlighterMenu();
-		browser.runtime.sendMessage({ action: "highlighterModeChanged", isActive: false });
+		sendRuntimeMessageSafely({ action: "highlighterModeChanged", isActive: false });
 		if (!generalSettings.alwaysShowHighlights) {
 			removeExistingHighlights();
 		}
@@ -843,7 +850,7 @@ function getHighlightableParent(node: Node): Element {
 function getTextOffset(container: Element, targetNode: Node, targetOffset: number): number {
 	let offset = 0;
 	const treeWalker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
-	
+
 	let node: Node | null = treeWalker.currentNode;
 	while (node) {
 		if (node === targetNode) {
@@ -936,8 +943,11 @@ function mergeOverlappingHighlights(existingHighlights: AnyHighlightData[], newH
 	let merged = false;
 
 	for (const existing of existingHighlights) {
-		// Overlapping or directly-adjacent highlights are intentionally merged into one contiguous highlight.
-		if (doHighlightsOverlap(existing, newHighlight) || areHighlightsAdjacent(existing, newHighlight)) {
+		// Keep overlap layers distinct; only adjacency may collapse into a single run.
+		const isOverlapping = doHighlightsOverlap(existing, newHighlight);
+		const isAdjacent = areHighlightsAdjacent(existing, newHighlight);
+		const relationship = isAdjacent ? 'adjacent' : (isOverlapping ? 'overlap' : null);
+		if (relationship && shouldAutoMergeHighlights(existing, newHighlight, relationship)) {
 			if (!merged) {
 				mergedHighlights.push(mergeHighlights(existing, newHighlight));
 				merged = true;
@@ -977,7 +987,15 @@ function mergeHighlights(highlight1: AnyHighlightData, highlight2: AnyHighlightD
 		throw new Error("Cannot merge highlights: elements not found");
 	}
 
-	// If one highlight is an element and the other is text, prioritize the element highlight
+	// When a text selection overlaps an element highlight on the same node,
+	// preserve the text selection instead of collapsing to an element entry.
+	if (highlight1.type === 'element' && highlight2.type === 'text' && highlight1.xpath === highlight2.xpath) {
+		return { ...highlight2, notes, color, createdAt };
+	} else if (highlight2.type === 'element' && highlight1.type === 'text' && highlight1.xpath === highlight2.xpath) {
+		return { ...highlight1, notes, color, createdAt };
+	}
+
+	// For mixed-type highlights on different nodes, keep element semantics.
 	if (highlight1.type === 'element' && highlight2.type === 'text') {
 		return { ...highlight1, notes, color, createdAt };
 	} else if (highlight2.type === 'element' && highlight1.type === 'text') {
@@ -1113,9 +1131,13 @@ export function applyHighlights() {
 
 // Notify that highlights have been updated
 async function notifyHighlightsUpdated() {
-	const response = await browser.runtime.sendMessage({ action: "getActiveTab" }) as { tabId?: number; error?: string };
-	if (response.tabId) {
-		browser.runtime.sendMessage({ action: "highlightsUpdated", tabId: response.tabId });
+	try {
+		const response = await browser.runtime.sendMessage({ action: "getActiveTab" }) as { tabId?: number; error?: string };
+		if (response.tabId) {
+			sendRuntimeMessageSafely({ action: "highlightsUpdated", tabId: response.tabId });
+		}
+	} catch {
+		// Skip notification when runtime channel is unavailable.
 	}
 }
 
@@ -1276,7 +1298,7 @@ export function clearHighlights() {
 			highlights = [];
 			removeExistingHighlights();
 			console.log('Highlights cleared for:', url);
-			browser.runtime.sendMessage({ action: "highlightsCleared" });
+			sendRuntimeMessageSafely({ action: "highlightsCleared" });
 			notifyHighlightsUpdated();
 			updateHighlighterMenu();
 			addToHistory('remove', oldHighlights, []);
@@ -1305,7 +1327,7 @@ function handleKeyDown(event: KeyboardEvent) {
 function exitHighlighterMode() {
 	console.log('Exiting highlighter mode');
 	toggleHighlighterMenu(false);
-	browser.runtime.sendMessage({ action: "setHighlighterMode", isActive: false });
+	sendRuntimeMessageSafely({ action: "setHighlighterMode", isActive: false });
 
 	// Remove highlight overlays if "Always show highlights" is off
 	if (!generalSettings.alwaysShowHighlights) {

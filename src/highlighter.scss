@@ -1,3 +1,5 @@
+@import './styles/highlighter-icon-reset';
+
 @media (max-width: 769px) {
 	.obsidian-highlighter-menu {
 		--obsidian-highlighter-menu-font-size: 15px;
@@ -230,21 +232,9 @@ html.obsidian-offset-handle-dragging {
 		box-shadow: var(--obsidian-highlighter-button-border) !important;
 		-webkit-font-smoothing: antialiased !important;
 		svg {
+			@include highlighter-svg-icon-reset;
 			mix-blend-mode: normal !important;
 			color: #bebebe !important;
-			width: 16px !important;
-			height: 16px !important;
-			margin: 0 !important;
-			padding: 0 !important;
-			display: block !important;
-			position: static !important;
-			top: auto !important;
-			right: auto !important;
-			bottom: auto !important;
-			left: auto !important;
-			transform: none !important;
-			vertical-align: middle !important;
-			flex-shrink: 0 !important;
 			path, line {
 				color: #bebebe;
 			}
